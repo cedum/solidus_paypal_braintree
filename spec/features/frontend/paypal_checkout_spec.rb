@@ -17,30 +17,44 @@ describe "Checkout", type: :feature, js: true do
   let!(:payment_method) { create_gateway }
   let!(:zone) { create(:zone) }
 
-  context "goes through express checkout using paypal cart button" do
+  before do
+    # PayPal sandbox doesn't return a phone number,
+    # but Solidus by default requires one
+    allow_any_instance_of(Spree::Address).
+      to receive(:require_phone?).
+      and_return(false)
+  end
+
+  context "goes through express checkout using paypal cart button", vcr: {
+    cassette_name: 'paypal/cart_checkout',
+    match_requests_on: [:braintree_uri]
+  } do
     before do
       payment_method
       add_mug_to_cart
     end
 
-    it "should check out successfully", skip: "Broken. To be revisited" do
+    it "should check out successfully" do
+      expect_any_instance_of(Spree::Order).to receive(:restart_checkout_flow)
       pend_if_paypal_slow do
-        expect_any_instance_of(Spree::Order).to receive(:restart_checkout_flow)
         move_through_paypal_popup
-        expect(page).to have_content("Shipments")
-        click_on "Place Order"
-        expect(page).to have_content("Your order has been processed successfully")
       end
+      expect(page).to have_content("Shipments")
+      click_on "Place Order"
+      expect(page).to have_content("Your order has been processed successfully")
     end
   end
 
-  context "goes through regular checkout using paypal payment method" do
+  context "goes through regular checkout using paypal payment method", vcr: {
+    cassette_name: 'paypal/checkout',
+    match_requests_on: [:braintree_uri]
+  } do
     before do
       payment_method
       add_mug_to_cart
     end
 
-    it "should check out successfully", skip: "Broken. To be revisited" do
+    it "should check out successfully" do
       click_button("Checkout")
       fill_in("order_email", with: "stembolt_buyer@stembolttest.com")
 
@@ -53,14 +67,15 @@ describe "Checkout", type: :feature, js: true do
       expect(page).to have_content("SHIPPING METHOD")
       click_button("Save and Continue")
 
-      pend_if_paypal_slow do
-        expect_any_instance_of(Spree::Order).to_not receive(:restart_checkout_flow)
-        move_through_paypal_popup
+      expect_any_instance_of(Spree::Order).to_not receive(:restart_checkout_flow)
 
-        expect(page).to have_content("Shipments")
-        click_on "Place Order"
-        expect(page).to have_content("Your order has been processed successfully")
+      pend_if_paypal_slow do
+        move_through_paypal_popup
       end
+
+      expect(page).to have_content("Shipments")
+      click_on "Place Order"
+      expect(page).to have_content("Your order has been processed successfully")
     end
   end
 
@@ -75,27 +90,30 @@ describe "Checkout", type: :feature, js: true do
   def move_through_paypal_popup
     expect(page).to have_css('#paypal-button .paypal-button')
 
-    sleep 2 # the PayPal button is not immediately ready
+    sleep 5 # the PayPal button is not immediately ready
 
-    popup = page.window_opened_by do
+    popup = window_opened_by do
       within_frame find('#paypal-button iframe') do
         find('div.paypal-button').click
       end
     end
-    page.switch_to_window(popup)
+    switch_to_window(popup)
 
     # We don't control this popup window.
     # So javascript errors are not our errors.
     begin
       expect(page).to_not have_selector('body.loading')
+
       fill_in("login_email", with: "stembolt_buyer@stembolttest.com")
       click_on "Next"
+      expect(page).to_not have_selector('body.loading')
+
       fill_in("login_password", with: "test1234")
-
-      expect(page).to_not have_selector('body.loading')
       click_button("btnLogin")
-
       expect(page).to_not have_selector('body.loading')
+
+      sleep 5
+
       click_button("Continue")
       click_button("Agree & Continue")
     rescue Selenium::WebDriver::Error::JavascriptError => e
